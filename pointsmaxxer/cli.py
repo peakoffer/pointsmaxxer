@@ -20,6 +20,7 @@ from .models import AppConfig, CabinClass, PointsProgram, Route
 from .portfolio import PortfolioManager
 from .analyzer import DealAnalyzer
 from .scheduler import DaemonScheduler, AwardScanner
+from .booking import generate_booking_url_from_deal
 
 
 app = typer.Typer(
@@ -229,6 +230,7 @@ def _display_search_results(deals: list, origin: str, destination: str, cabin: C
     for deal in unicorns:
         flight = deal.award.flight
         award = deal.award
+        booking_url = generate_booking_url_from_deal(deal)
 
         panel_content = f"""
 [bold white]{flight.airline_name} {flight.flight_no}[/]  {flight.departure.strftime('%b %d')}  {origin}→{destination}  {flight.duration_formatted}  {cabin.value.title()}
@@ -240,6 +242,9 @@ def _display_search_results(deals: list, origin: str, destination: str, cabin: C
 
         if deal.your_source_program:
             panel_content += f"\n[bold green]YOUR BEST PATH:[/] {deal.your_source_program} → {award.program} ({deal.your_cost:,}) = ${deal.value_dollars:,.0f} value"
+
+        if booking_url:
+            panel_content += f"\n\n[bold cyan]BOOK NOW:[/] {booking_url}"
 
         console.print(Panel(
             panel_content.strip(),
@@ -391,6 +396,7 @@ def discover(
 def history(
     limit: int = typer.Option(20, "--limit", "-l", help="Number of deals to show"),
     unicorns: bool = typer.Option(False, "--unicorns", "-u", help="Only show unicorns"),
+    show_links: bool = typer.Option(False, "--links", "-k", help="Show booking links"),
 ):
     """View deal history."""
     db = get_db()
@@ -402,6 +408,7 @@ def history(
         return
 
     table = Table(title="Recent Deals", show_header=True)
+    table.add_column("#", style="dim")
     table.add_column("Date")
     table.add_column("Route")
     table.add_column("Program")
@@ -409,9 +416,10 @@ def history(
     table.add_column("CPP", justify="right")
     table.add_column("Unicorn")
 
-    for deal in deals:
+    for idx, deal in enumerate(deals, 1):
         flight = deal.award.flight
         table.add_row(
+            str(idx),
             deal.created_at.strftime("%b %d %H:%M"),
             f"{flight.origin}→{flight.destination}",
             deal.award.program,
@@ -421,6 +429,231 @@ def history(
         )
 
     console.print(table)
+
+    if show_links:
+        console.print("\n[bold cyan]Booking Links:[/]")
+        for idx, deal in enumerate(deals, 1):
+            flight = deal.award.flight
+            booking_url = generate_booking_url_from_deal(deal)
+            if booking_url:
+                console.print(f"  [{idx}] {flight.origin}→{flight.destination} ({deal.award.program}): {booking_url}")
+            else:
+                console.print(f"  [{idx}] {flight.origin}→{flight.destination}: [dim]No direct link available[/]")
+
+
+# ============================================================================
+# Price Drop Commands
+# ============================================================================
+
+@app.command()
+def price_drops(
+    limit: int = typer.Option(20, "--limit", "-l", help="Number of drops to show"),
+    min_drop: float = typer.Option(10.0, "--min-drop", "-m", help="Minimum drop percentage"),
+    days: int = typer.Option(14, "--days", "-d", help="Lookback days for comparison"),
+    show_links: bool = typer.Option(False, "--links", "-k", help="Show booking links"),
+):
+    """View recent price drops on award flights."""
+    from .booking import generate_booking_url
+    from .models import Award, Flight
+
+    db = get_db()
+
+    drops = db.get_routes_with_drops(
+        min_drop_percent=min_drop,
+        lookback_days=days,
+        limit=limit,
+    )
+
+    if not drops:
+        console.print("[yellow]No significant price drops detected.[/]")
+        console.print(f"[dim]Checked last {days} days with {min_drop}% minimum drop threshold.[/]")
+        return
+
+    # Display major drops in panels
+    major_drops = [d for d in drops if d["drop_percent"] >= 25.0]
+    regular_drops = [d for d in drops if d["drop_percent"] < 25.0]
+
+    for drop in major_drops:
+        panel_content = f"""
+[bold white]{drop['origin']} → {drop['destination']}[/]  {drop['program'].upper()}  {drop['cabin'].title()}
+
+[bold]Previous     Current      Savings[/]
+────────────────────────────────────────
+{drop['old_miles']:>8,}     {drop['new_miles']:>8,}      [bold green]-{drop['drop_amount']:,} ({drop['drop_percent']:.0f}% off!)[/]
+"""
+        console.print(Panel(
+            panel_content.strip(),
+            title="MAJOR PRICE DROP",
+            border_style="green",
+        ))
+        console.print()
+
+    # Display regular drops in a table
+    if regular_drops:
+        table = Table(title="Price Drops", show_header=True)
+        table.add_column("#", style="dim")
+        table.add_column("Route")
+        table.add_column("Program")
+        table.add_column("Cabin")
+        table.add_column("Was", justify="right")
+        table.add_column("Now", justify="right")
+        table.add_column("Drop", justify="right", style="green")
+
+        for idx, drop in enumerate(regular_drops, 1):
+            table.add_row(
+                str(idx),
+                f"{drop['origin']}→{drop['destination']}",
+                drop["program"].upper(),
+                drop["cabin"].title(),
+                f"{drop['old_miles']:,}",
+                f"{drop['new_miles']:,}",
+                f"-{drop['drop_percent']:.0f}%",
+            )
+
+        console.print(table)
+
+    if show_links:
+        console.print("\n[bold cyan]Booking Links:[/]")
+        for idx, drop in enumerate(drops, 1):
+            # Create minimal award for URL generation
+            flight = Flight(
+                flight_no="",
+                airline_code=drop["program"].upper(),
+                origin=drop["origin"],
+                destination=drop["destination"],
+                departure=datetime.now(),
+                arrival=datetime.now(),
+                duration_minutes=0,
+            )
+            award = Award(
+                flight=flight,
+                program=drop["program"],
+                miles=drop["new_miles"],
+                cabin=CabinClass(drop["cabin"]),
+            )
+            url = generate_booking_url(award)
+            if url:
+                console.print(f"  [{idx}] {drop['origin']}→{drop['destination']} ({drop['program']}): {url}")
+
+    console.print(f"\n[dim]Found {len(drops)} price drops in last {days} days[/]")
+
+
+@app.command()
+def price_history(
+    origin: str = typer.Argument(..., help="Origin airport code"),
+    destination: str = typer.Argument(..., help="Destination airport code"),
+    cabin: str = typer.Option("business", "--cabin", "-c", help="Cabin class"),
+    days: int = typer.Option(30, "--days", "-d", help="Lookback days"),
+):
+    """View price history for a route."""
+    db = get_db()
+
+    try:
+        cabin_class = CabinClass(cabin.lower())
+    except ValueError:
+        console.print(f"[red]Invalid cabin: {cabin}[/]")
+        raise typer.Exit(1)
+
+    summary = db.get_price_history_summary(
+        origin=origin.upper(),
+        destination=destination.upper(),
+        cabin=cabin_class,
+        lookback_days=days,
+    )
+
+    if not summary:
+        console.print(f"[yellow]No price history found for {origin}→{destination} ({cabin}).[/]")
+        console.print("[dim]Run some searches first to build up history.[/]")
+        return
+
+    console.print(f"\n[bold]Price History: {origin.upper()} → {destination.upper()} ({cabin_class.value.title()})[/]")
+    console.print(f"[dim]Last {days} days[/]\n")
+
+    table = Table(show_header=True, header_style="bold cyan")
+    table.add_column("Program")
+    table.add_column("Min", justify="right", style="green")
+    table.add_column("Max", justify="right")
+    table.add_column("Avg", justify="right")
+    table.add_column("Current", justify="right")
+    table.add_column("Samples", justify="right", style="dim")
+
+    for program, stats in sorted(summary.items()):
+        current_style = ""
+        if stats["current"] and stats["current"] == stats["min"]:
+            current_style = "[bold green]"
+        elif stats["current"] and stats["current"] == stats["max"]:
+            current_style = "[red]"
+
+        current_display = f"{current_style}{stats['current']:,}[/]" if stats["current"] else "N/A"
+
+        table.add_row(
+            program.upper(),
+            f"{stats['min']:,}",
+            f"{stats['max']:,}",
+            f"{stats['avg']:,.0f}",
+            current_display,
+            str(stats["samples"]),
+        )
+
+    console.print(table)
+    console.print("\n[dim]Green = at historical low, Red = at historical high[/]")
+
+
+# ============================================================================
+# Booking Commands
+# ============================================================================
+
+@app.command()
+def book(
+    origin: str = typer.Argument(..., help="Origin airport code"),
+    destination: str = typer.Argument(..., help="Destination airport code"),
+    program: str = typer.Argument(..., help="Program code (aa, united, delta, aeroplan, alaska, ba)"),
+    date: str = typer.Argument(..., help="Departure date (YYYY-MM-DD)"),
+    cabin: str = typer.Option("business", "--cabin", "-c", help="Cabin class"),
+):
+    """Generate a booking link for an award flight."""
+    from .booking import generate_booking_url
+    from .models import Award, Flight, CabinClass
+
+    try:
+        cabin_class = CabinClass(cabin.lower())
+    except ValueError:
+        console.print(f"[red]Invalid cabin: {cabin}. Use economy, premium_economy, business, or first[/]")
+        raise typer.Exit(1)
+
+    try:
+        departure = datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        console.print("[red]Invalid date format. Use YYYY-MM-DD[/]")
+        raise typer.Exit(1)
+
+    # Create a minimal flight/award to generate the URL
+    flight = Flight(
+        flight_no="",
+        airline_code=program.upper(),
+        origin=origin.upper(),
+        destination=destination.upper(),
+        departure=departure,
+        arrival=departure,
+        duration_minutes=0,
+    )
+
+    award = Award(
+        flight=flight,
+        program=program.lower(),
+        miles=0,
+        cabin=cabin_class,
+    )
+
+    url = generate_booking_url(award)
+
+    if url:
+        console.print(f"\n[bold cyan]Booking Link for {program.upper()}:[/]")
+        console.print(f"  {origin.upper()} → {destination.upper()} on {date} ({cabin_class.value})\n")
+        console.print(f"  {url}\n")
+    else:
+        console.print(f"[yellow]No booking link template available for {program}[/]")
+        console.print("Supported programs: aa, united, delta, aeroplan, alaska, ba")
 
 
 # ============================================================================

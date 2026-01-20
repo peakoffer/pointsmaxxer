@@ -407,3 +407,170 @@ class Database:
             return deleted
         finally:
             session.close()
+
+    def get_historical_award_prices(
+        self,
+        origin: str,
+        destination: str,
+        program: str,
+        cabin: CabinClass,
+        lookback_days: int = 14,
+    ) -> list[dict]:
+        """Get historical award prices for a route/program/cabin.
+
+        Returns:
+            List of dicts with miles, departure, and scraped_at.
+        """
+        from datetime import timedelta
+
+        session = self.Session()
+        try:
+            cutoff = datetime.now() - timedelta(days=lookback_days)
+
+            records = session.query(AwardRecord).filter(
+                AwardRecord.origin == origin,
+                AwardRecord.destination == destination,
+                AwardRecord.program == program,
+                AwardRecord.cabin == cabin.value,
+                AwardRecord.scraped_at >= cutoff,
+            ).order_by(desc(AwardRecord.scraped_at)).all()
+
+            return [
+                {
+                    "miles": r.miles,
+                    "departure": r.departure,
+                    "scraped_at": r.scraped_at,
+                    "is_saver": r.is_saver,
+                    "flight_no": r.flight_no,
+                }
+                for r in records
+            ]
+        finally:
+            session.close()
+
+    def get_price_history_summary(
+        self,
+        origin: str,
+        destination: str,
+        cabin: CabinClass,
+        lookback_days: int = 30,
+    ) -> dict[str, dict]:
+        """Get price history summary grouped by program.
+
+        Returns:
+            Dict mapping program codes to their price stats.
+        """
+        from datetime import timedelta
+
+        session = self.Session()
+        try:
+            cutoff = datetime.now() - timedelta(days=lookback_days)
+
+            records = session.query(AwardRecord).filter(
+                AwardRecord.origin == origin,
+                AwardRecord.destination == destination,
+                AwardRecord.cabin == cabin.value,
+                AwardRecord.scraped_at >= cutoff,
+            ).all()
+
+            # Group by program
+            by_program: dict[str, list[int]] = {}
+            for r in records:
+                if r.program not in by_program:
+                    by_program[r.program] = []
+                by_program[r.program].append(r.miles)
+
+            # Calculate stats
+            summary = {}
+            for program, prices in by_program.items():
+                summary[program] = {
+                    "min": min(prices),
+                    "max": max(prices),
+                    "avg": sum(prices) / len(prices),
+                    "current": prices[0] if prices else None,
+                    "samples": len(prices),
+                }
+
+            return summary
+        finally:
+            session.close()
+
+    def get_routes_with_drops(
+        self,
+        min_drop_percent: float = 10.0,
+        lookback_days: int = 14,
+        limit: int = 20,
+    ) -> list[dict]:
+        """Find routes where price has dropped significantly.
+
+        Returns:
+            List of routes with price drop info.
+        """
+        from datetime import timedelta
+        from sqlalchemy import func
+
+        session = self.Session()
+        try:
+            cutoff = datetime.now() - timedelta(days=lookback_days)
+            recent_cutoff = datetime.now() - timedelta(days=2)
+
+            # Get all recent award records
+            records = session.query(AwardRecord).filter(
+                AwardRecord.scraped_at >= cutoff,
+            ).all()
+
+            # Group by route key
+            route_prices: dict[str, list[tuple[int, datetime]]] = {}
+            for r in records:
+                key = f"{r.origin}:{r.destination}:{r.program}:{r.cabin}"
+                if key not in route_prices:
+                    route_prices[key] = []
+                route_prices[key].append((r.miles, r.scraped_at))
+
+            # Find drops
+            drops = []
+            for key, prices in route_prices.items():
+                if len(prices) < 2:
+                    continue
+
+                # Sort by date
+                prices.sort(key=lambda x: x[1], reverse=True)
+
+                # Get recent price (within last 2 days)
+                recent_prices = [p for p in prices if p[1] >= recent_cutoff]
+                if not recent_prices:
+                    continue
+
+                current_miles = min(p[0] for p in recent_prices)
+
+                # Get older prices
+                older_prices = [p[0] for p in prices if p[1] < recent_cutoff]
+                if not older_prices:
+                    continue
+
+                max_older = max(older_prices)
+                if max_older <= current_miles:
+                    continue
+
+                drop_amount = max_older - current_miles
+                drop_percent = (drop_amount / max_older) * 100
+
+                if drop_percent >= min_drop_percent:
+                    parts = key.split(":")
+                    drops.append({
+                        "origin": parts[0],
+                        "destination": parts[1],
+                        "program": parts[2],
+                        "cabin": parts[3],
+                        "old_miles": max_older,
+                        "new_miles": current_miles,
+                        "drop_amount": drop_amount,
+                        "drop_percent": drop_percent,
+                    })
+
+            # Sort by drop percent and limit
+            drops.sort(key=lambda d: d["drop_percent"], reverse=True)
+            return drops[:limit]
+
+        finally:
+            session.close()
