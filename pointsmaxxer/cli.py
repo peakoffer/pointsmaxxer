@@ -442,6 +442,164 @@ def history(
 
 
 # ============================================================================
+# Price Drop Commands
+# ============================================================================
+
+@app.command()
+def price_drops(
+    limit: int = typer.Option(20, "--limit", "-l", help="Number of drops to show"),
+    min_drop: float = typer.Option(10.0, "--min-drop", "-m", help="Minimum drop percentage"),
+    days: int = typer.Option(14, "--days", "-d", help="Lookback days for comparison"),
+    show_links: bool = typer.Option(False, "--links", "-k", help="Show booking links"),
+):
+    """View recent price drops on award flights."""
+    from .booking import generate_booking_url
+    from .models import Award, Flight
+
+    db = get_db()
+
+    drops = db.get_routes_with_drops(
+        min_drop_percent=min_drop,
+        lookback_days=days,
+        limit=limit,
+    )
+
+    if not drops:
+        console.print("[yellow]No significant price drops detected.[/]")
+        console.print(f"[dim]Checked last {days} days with {min_drop}% minimum drop threshold.[/]")
+        return
+
+    # Display major drops in panels
+    major_drops = [d for d in drops if d["drop_percent"] >= 25.0]
+    regular_drops = [d for d in drops if d["drop_percent"] < 25.0]
+
+    for drop in major_drops:
+        panel_content = f"""
+[bold white]{drop['origin']} → {drop['destination']}[/]  {drop['program'].upper()}  {drop['cabin'].title()}
+
+[bold]Previous     Current      Savings[/]
+────────────────────────────────────────
+{drop['old_miles']:>8,}     {drop['new_miles']:>8,}      [bold green]-{drop['drop_amount']:,} ({drop['drop_percent']:.0f}% off!)[/]
+"""
+        console.print(Panel(
+            panel_content.strip(),
+            title="MAJOR PRICE DROP",
+            border_style="green",
+        ))
+        console.print()
+
+    # Display regular drops in a table
+    if regular_drops:
+        table = Table(title="Price Drops", show_header=True)
+        table.add_column("#", style="dim")
+        table.add_column("Route")
+        table.add_column("Program")
+        table.add_column("Cabin")
+        table.add_column("Was", justify="right")
+        table.add_column("Now", justify="right")
+        table.add_column("Drop", justify="right", style="green")
+
+        for idx, drop in enumerate(regular_drops, 1):
+            table.add_row(
+                str(idx),
+                f"{drop['origin']}→{drop['destination']}",
+                drop["program"].upper(),
+                drop["cabin"].title(),
+                f"{drop['old_miles']:,}",
+                f"{drop['new_miles']:,}",
+                f"-{drop['drop_percent']:.0f}%",
+            )
+
+        console.print(table)
+
+    if show_links:
+        console.print("\n[bold cyan]Booking Links:[/]")
+        for idx, drop in enumerate(drops, 1):
+            # Create minimal award for URL generation
+            flight = Flight(
+                flight_no="",
+                airline_code=drop["program"].upper(),
+                origin=drop["origin"],
+                destination=drop["destination"],
+                departure=datetime.now(),
+                arrival=datetime.now(),
+                duration_minutes=0,
+            )
+            award = Award(
+                flight=flight,
+                program=drop["program"],
+                miles=drop["new_miles"],
+                cabin=CabinClass(drop["cabin"]),
+            )
+            url = generate_booking_url(award)
+            if url:
+                console.print(f"  [{idx}] {drop['origin']}→{drop['destination']} ({drop['program']}): {url}")
+
+    console.print(f"\n[dim]Found {len(drops)} price drops in last {days} days[/]")
+
+
+@app.command()
+def price_history(
+    origin: str = typer.Argument(..., help="Origin airport code"),
+    destination: str = typer.Argument(..., help="Destination airport code"),
+    cabin: str = typer.Option("business", "--cabin", "-c", help="Cabin class"),
+    days: int = typer.Option(30, "--days", "-d", help="Lookback days"),
+):
+    """View price history for a route."""
+    db = get_db()
+
+    try:
+        cabin_class = CabinClass(cabin.lower())
+    except ValueError:
+        console.print(f"[red]Invalid cabin: {cabin}[/]")
+        raise typer.Exit(1)
+
+    summary = db.get_price_history_summary(
+        origin=origin.upper(),
+        destination=destination.upper(),
+        cabin=cabin_class,
+        lookback_days=days,
+    )
+
+    if not summary:
+        console.print(f"[yellow]No price history found for {origin}→{destination} ({cabin}).[/]")
+        console.print("[dim]Run some searches first to build up history.[/]")
+        return
+
+    console.print(f"\n[bold]Price History: {origin.upper()} → {destination.upper()} ({cabin_class.value.title()})[/]")
+    console.print(f"[dim]Last {days} days[/]\n")
+
+    table = Table(show_header=True, header_style="bold cyan")
+    table.add_column("Program")
+    table.add_column("Min", justify="right", style="green")
+    table.add_column("Max", justify="right")
+    table.add_column("Avg", justify="right")
+    table.add_column("Current", justify="right")
+    table.add_column("Samples", justify="right", style="dim")
+
+    for program, stats in sorted(summary.items()):
+        current_style = ""
+        if stats["current"] and stats["current"] == stats["min"]:
+            current_style = "[bold green]"
+        elif stats["current"] and stats["current"] == stats["max"]:
+            current_style = "[red]"
+
+        current_display = f"{current_style}{stats['current']:,}[/]" if stats["current"] else "N/A"
+
+        table.add_row(
+            program.upper(),
+            f"{stats['min']:,}",
+            f"{stats['max']:,}",
+            f"{stats['avg']:,.0f}",
+            current_display,
+            str(stats["samples"]),
+        )
+
+    console.print(table)
+    console.print("\n[dim]Green = at historical low, Red = at historical high[/]")
+
+
+# ============================================================================
 # Booking Commands
 # ============================================================================
 
