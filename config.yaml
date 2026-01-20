@@ -124,6 +124,10 @@ settings:
   # Delay between requests (be nice to servers)
   request_delay_seconds: 2.0
 
+  # Seats.aero API key for real award availability data
+  # Get your key at: https://seats.aero
+  # seats_aero_api_key: your-api-key-here
+
 # Alert configuration
 alerts:
   # Show alerts in terminal

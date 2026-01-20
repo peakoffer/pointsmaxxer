@@ -100,6 +100,7 @@ def parse_config(raw: dict) -> AppConfig:
         max_stops=raw_settings.get("max_stops", 1),
         cache_ttl_hours=raw_settings.get("cache_ttl_hours", 6),
         request_delay_seconds=raw_settings.get("request_delay_seconds", 2.0),
+        seats_aero_api_key=raw_settings.get("seats_aero_api_key") or os.environ.get("SEATS_AERO_API_KEY"),
     )
 
     raw_alerts = raw.get("alerts", {})

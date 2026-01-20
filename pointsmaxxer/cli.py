@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 import typer
+import yaml
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -126,9 +127,16 @@ def search(
     cabin: str = typer.Option("business", "--cabin", "-c", help="Cabin class: economy, premium_economy, business, first"),
     dates: Optional[str] = typer.Option(None, "--dates", "-d", help="Date range: YYYY-MM-DD:YYYY-MM-DD"),
     program: Optional[str] = typer.Option(None, "--program", "-p", help="Specific program to search"),
-    live: bool = typer.Option(False, "--live", "-l", help="Use live scrapers instead of demo data"),
+    live: bool = typer.Option(False, "--live", "-l", help="Use real data (requires seats.aero API key)"),
 ):
-    """Search for award availability on a route."""
+    """Search for award availability on a route.
+
+    Uses demo data by default. For real award data, set your Seats.aero API key:
+      - In config.yaml: seats_aero_api_key: "your-key"
+      - Or env var: SEATS_AERO_API_KEY=your-key
+
+    Then use --live flag to search real availability.
+    """
     config = get_config()
 
     # Parse cabin
@@ -153,8 +161,16 @@ def search(
 
     console.print(f"\n[bold]Searching {origin.upper()} → {destination.upper()} ({cabin_class.value})[/]")
     console.print(f"[dim]Dates: {start_date.strftime('%b %d')} - {end_date.strftime('%b %d, %Y')}[/]")
-    if not live:
+
+    if live and not config.settings.seats_aero_api_key:
+        console.print("[yellow]No Seats.aero API key configured.[/]")
+        console.print("[dim]Set via: pointsmaxxer set-api-key YOUR_KEY[/]")
+        console.print("[dim]Or get a key at: https://seats.aero[/]")
+        console.print("[dim]Falling back to demo data...[/]")
+        live = False  # Fall back to demo
+    elif not live:
         console.print("[dim]Using demo data (use --live for real searches)[/]")
+
     console.print()
 
     # Run search
@@ -181,8 +197,28 @@ async def _run_search(
 
         try:
             all_awards = []
+            cash_price = None
 
-            if use_demo:
+            # Check if we have seats.aero API key configured
+            has_seats_aero = bool(config.settings.seats_aero_api_key)
+
+            if has_seats_aero and not use_demo:
+                # Use Seats.aero for real data
+                from .scrapers.seats_aero import SeatsAeroScraper
+                from .scrapers.google_flights import get_fallback_price
+
+                progress.update(task, description="Searching Seats.aero...")
+                try:
+                    scraper = SeatsAeroScraper(api_key=config.settings.seats_aero_api_key)
+                    awards = await scraper.search_all_programs(origin, destination, date, cabin)
+                    all_awards.extend(awards)
+                    await scraper.close()
+                except Exception as e:
+                    console.print(f"[yellow]Seats.aero error: {e}[/]")
+
+                cash_price = get_fallback_price(origin, destination, cabin)
+
+            elif use_demo:
                 # Use demo scraper for realistic sample data
                 from .scrapers.demo import DemoScraper, get_demo_cash_price
 
@@ -192,7 +228,7 @@ async def _run_search(
                 all_awards.extend(awards)
                 cash_price = get_demo_cash_price(origin, destination, cabin)
             else:
-                # Use live scrapers
+                # Use live scrapers (fallback)
                 from .scrapers.base import ScraperRegistry
                 from .scrapers.google_flights import get_fallback_price
 
@@ -799,6 +835,73 @@ def add_route(
 # ============================================================================
 # Utility Commands
 # ============================================================================
+
+@app.command()
+def status():
+    """Show configuration and data source status."""
+    config = get_config()
+    path = get_config_path()
+
+    console.print("\n[bold]PointsMaxxer Status[/]\n")
+
+    # Config file
+    if path.exists():
+        console.print(f"  Config file: [green]{path}[/]")
+    else:
+        console.print(f"  Config file: [yellow]Not found (using defaults)[/]")
+
+    # Portfolio
+    total_points = sum(p.balance for p in config.portfolio)
+    console.print(f"  Portfolio: [cyan]{len(config.portfolio)} programs, {total_points:,} points[/]")
+
+    # Routes
+    console.print(f"  Routes: [cyan]{len(config.routes)} monitored[/]")
+
+    # Data sources
+    console.print("\n[bold]Data Sources[/]\n")
+
+    if config.settings.seats_aero_api_key:
+        # Mask the API key for display
+        key = config.settings.seats_aero_api_key
+        masked = key[:4] + "..." + key[-4:] if len(key) > 8 else "****"
+        console.print(f"  Seats.aero API: [green]Configured[/] ({masked})")
+        console.print(f"    → Use [bold]--live[/] flag for real award searches")
+    else:
+        console.print(f"  Seats.aero API: [yellow]Not configured[/]")
+        console.print(f"    → Get API key at [link]https://seats.aero[/link]")
+        console.print(f"    → Set via: config.yaml or SEATS_AERO_API_KEY env var")
+
+    console.print()
+
+
+@app.command()
+def set_api_key(
+    key: str = typer.Argument(..., help="Your Seats.aero API key"),
+):
+    """Set your Seats.aero API key for real award data."""
+    config = get_config()
+    path = get_config_path()
+
+    # Read existing config file if it exists
+    if path.exists():
+        with open(path, "r") as f:
+            raw_config = yaml.safe_load(f) or {}
+    else:
+        raw_config = {}
+
+    # Update the settings
+    if "settings" not in raw_config:
+        raw_config["settings"] = {}
+    raw_config["settings"]["seats_aero_api_key"] = key
+
+    # Write back
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        yaml.dump(raw_config, f, default_flow_style=False, sort_keys=False)
+
+    console.print(f"[green]API key saved to {path}[/]")
+    console.print("You can now use [bold]pointsmaxxer search --live[/] for real data.")
+
 
 @app.command()
 def config_path():

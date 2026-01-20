@@ -171,6 +171,8 @@ class Settings(BaseModel):
     max_stops: int = Field(default=1, ge=0)
     cache_ttl_hours: int = Field(default=6, gt=0)
     request_delay_seconds: float = Field(default=2.0, ge=0)
+    # API keys for data sources
+    seats_aero_api_key: Optional[str] = Field(default=None, description="Seats.aero API key for real award data")
 
 
 class AppConfig(BaseModel):
