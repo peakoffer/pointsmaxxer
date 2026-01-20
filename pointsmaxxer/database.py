@@ -97,6 +97,23 @@ class SearchHistoryRecord(Base):
     searched_at = Column(DateTime, default=datetime.now)
 
 
+class WatchRecord(Base):
+    """SQLAlchemy model for route watches."""
+    __tablename__ = "watches"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    origin = Column(String(3), nullable=False)
+    destination = Column(String(3), nullable=False)
+    cabin = Column(String(20), nullable=False)
+    target_date = Column(DateTime, nullable=True)  # Optional specific date
+    min_cpp = Column(Float, default=0.0)  # Alert when CPP exceeds this
+    max_miles = Column(Integer, nullable=True)  # Alert when miles below this
+    active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.now)
+    last_checked = Column(DateTime, nullable=True)
+    last_alert = Column(DateTime, nullable=True)
+
+
 class Database:
     """Database manager for PointsMaxxer."""
 
@@ -405,5 +422,97 @@ class Database:
 
             session.commit()
             return deleted
+        finally:
+            session.close()
+
+    def add_watch(
+        self,
+        origin: str,
+        destination: str,
+        cabin: CabinClass,
+        target_date: Optional[datetime] = None,
+        min_cpp: float = 0.0,
+        max_miles: Optional[int] = None,
+    ) -> int:
+        """Add a route watch.
+
+        Returns:
+            The ID of the created watch.
+        """
+        session = self.Session()
+        try:
+            record = WatchRecord(
+                origin=origin.upper(),
+                destination=destination.upper(),
+                cabin=cabin.value,
+                target_date=target_date,
+                min_cpp=min_cpp,
+                max_miles=max_miles,
+                active=True,
+                created_at=datetime.now(),
+            )
+            session.add(record)
+            session.commit()
+            return record.id
+        finally:
+            session.close()
+
+    def get_watches(self, active_only: bool = True) -> list[dict]:
+        """Get all route watches."""
+        session = self.Session()
+        try:
+            query = session.query(WatchRecord)
+            if active_only:
+                query = query.filter(WatchRecord.active == True)
+            query = query.order_by(desc(WatchRecord.created_at))
+            records = query.all()
+
+            return [
+                {
+                    "id": r.id,
+                    "origin": r.origin,
+                    "destination": r.destination,
+                    "cabin": r.cabin,
+                    "target_date": r.target_date,
+                    "min_cpp": r.min_cpp,
+                    "max_miles": r.max_miles,
+                    "active": r.active,
+                    "created_at": r.created_at,
+                    "last_checked": r.last_checked,
+                    "last_alert": r.last_alert,
+                }
+                for r in records
+            ]
+        finally:
+            session.close()
+
+    def remove_watch(self, watch_id: int) -> bool:
+        """Remove a watch by ID.
+
+        Returns:
+            True if watch was found and removed.
+        """
+        session = self.Session()
+        try:
+            result = session.query(WatchRecord).filter(
+                WatchRecord.id == watch_id
+            ).delete()
+            session.commit()
+            return result > 0
+        finally:
+            session.close()
+
+    def update_watch_checked(self, watch_id: int, alerted: bool = False) -> None:
+        """Update the last checked time for a watch."""
+        session = self.Session()
+        try:
+            record = session.query(WatchRecord).filter(
+                WatchRecord.id == watch_id
+            ).first()
+            if record:
+                record.last_checked = datetime.now()
+                if alerted:
+                    record.last_alert = datetime.now()
+                session.commit()
         finally:
             session.close()

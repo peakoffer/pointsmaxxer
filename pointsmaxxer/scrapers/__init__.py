@@ -11,6 +11,7 @@ from .alaska import AlaskaScraper
 from .ba import BAScraper
 from .seats_aero import SeatsAeroScraper
 from .google_flights import GoogleFlightsScraper
+from .demo import DemoScraper, get_demo_cash_price
 
 __all__ = [
     "BaseScraper",
@@ -23,4 +24,6 @@ __all__ = [
     "BAScraper",
     "SeatsAeroScraper",
     "GoogleFlightsScraper",
+    "DemoScraper",
+    "get_demo_cash_price",
 ]

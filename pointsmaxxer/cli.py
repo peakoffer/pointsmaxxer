@@ -126,6 +126,7 @@ def search(
     cabin: str = typer.Option("business", "--cabin", "-c", help="Cabin class: economy, premium_economy, business, first"),
     dates: Optional[str] = typer.Option(None, "--dates", "-d", help="Date range: YYYY-MM-DD:YYYY-MM-DD"),
     program: Optional[str] = typer.Option(None, "--program", "-p", help="Specific program to search"),
+    live: bool = typer.Option(False, "--live", "-l", help="Use live scrapers instead of demo data"),
 ):
     """Search for award availability on a route."""
     config = get_config()
@@ -150,11 +151,14 @@ def search(
         start_date = datetime.now()
         end_date = start_date + timedelta(days=config.settings.search_window_days)
 
-    console.print(f"\n[bold]Searching {origin} → {destination} ({cabin_class.value})[/]")
-    console.print(f"[dim]Dates: {start_date.strftime('%b %d')} - {end_date.strftime('%b %d, %Y')}[/]\n")
+    console.print(f"\n[bold]Searching {origin.upper()} → {destination.upper()} ({cabin_class.value})[/]")
+    console.print(f"[dim]Dates: {start_date.strftime('%b %d')} - {end_date.strftime('%b %d, %Y')}[/]")
+    if not live:
+        console.print("[dim]Using demo data (use --live for real searches)[/]")
+    console.print()
 
     # Run search
-    asyncio.run(_run_search(config, origin, destination, cabin_class, start_date))
+    asyncio.run(_run_search(config, origin.upper(), destination.upper(), cabin_class, start_date, use_demo=not live))
 
 
 async def _run_search(
@@ -163,6 +167,7 @@ async def _run_search(
     destination: str,
     cabin: CabinClass,
     date: datetime,
+    use_demo: bool = True,
 ):
     """Run async search."""
     scanner = AwardScanner(config)
@@ -175,25 +180,37 @@ async def _run_search(
         task = progress.add_task("Searching...", total=None)
 
         try:
-            from .scrapers.base import ScraperRegistry
-            from .scrapers.google_flights import get_fallback_price
-
             all_awards = []
-            cash_price = get_fallback_price(origin, destination, cabin)
 
-            scrapers = ScraperRegistry.get_all()
-            for program_code, scraper_class in scrapers.items():
-                if program_code == "google_flights":
-                    continue
+            if use_demo:
+                # Use demo scraper for realistic sample data
+                from .scrapers.demo import DemoScraper, get_demo_cash_price
 
-                progress.update(task, description=f"Searching {program_code}...")
+                progress.update(task, description="Generating award options...")
+                scraper = DemoScraper()
+                awards = await scraper.search_awards(origin, destination, date, cabin)
+                all_awards.extend(awards)
+                cash_price = get_demo_cash_price(origin, destination, cabin)
+            else:
+                # Use live scrapers
+                from .scrapers.base import ScraperRegistry
+                from .scrapers.google_flights import get_fallback_price
 
-                try:
-                    async with scraper_class() as scraper:
-                        awards = await scraper.search_awards(origin, destination, date, cabin)
-                        all_awards.extend(awards)
-                except Exception:
-                    pass
+                cash_price = get_fallback_price(origin, destination, cabin)
+
+                scrapers = ScraperRegistry.get_all()
+                for program_code, scraper_class in scrapers.items():
+                    if program_code in ["google_flights", "demo"]:
+                        continue
+
+                    progress.update(task, description=f"Searching {program_code}...")
+
+                    try:
+                        async with scraper_class() as scraper:
+                            awards = await scraper.search_awards(origin, destination, date, cabin)
+                            all_awards.extend(awards)
+                    except Exception:
+                        pass
 
             progress.update(task, description="Analyzing results...")
 
@@ -275,6 +292,303 @@ def _display_search_results(deals: list, origin: str, destination: str, cabin: C
         console.print(table)
 
     console.print(f"\n[dim]Found {len(deals)} total awards, {len(unicorns)} unicorns[/]")
+
+
+@app.command()
+def best(
+    destination: str = typer.Argument(..., help="Destination airport code"),
+    cabin: str = typer.Option("business", "--cabin", "-c", help="Cabin class"),
+):
+    """Find the best award option for a route from your home airports."""
+    config = get_config()
+
+    try:
+        cabin_class = CabinClass(cabin.lower())
+    except ValueError:
+        console.print(f"[red]Invalid cabin: {cabin}[/]")
+        raise typer.Exit(1)
+
+    home_airports = config.settings.home_airports
+    if not home_airports:
+        console.print("[red]No home airports configured. Add them to config.yaml[/]")
+        raise typer.Exit(1)
+
+    console.print(f"\n[bold]Finding best awards to {destination.upper()} ({cabin_class.value})[/]")
+    console.print(f"[dim]From: {', '.join(home_airports)}[/]\n")
+
+    async def find_best():
+        from .scrapers.demo import DemoScraper, get_demo_cash_price
+
+        all_deals = []
+        analyzer = DealAnalyzer(config)
+        scraper = DemoScraper()
+
+        for origin in home_airports:
+            awards = await scraper.search_awards(origin, destination.upper(), datetime.now(), cabin_class)
+            cash_price = get_demo_cash_price(origin, destination.upper(), cabin_class)
+
+            for award in awards:
+                deal = analyzer.analyze_award(award, cash_price)
+                all_deals.append((origin, deal))
+
+        # Sort by CPP
+        all_deals.sort(key=lambda x: x[1].cpp, reverse=True)
+
+        if not all_deals:
+            console.print("[yellow]No availability found.[/]")
+            return
+
+        # Show best options
+        table = Table(title=f"Best Awards to {destination.upper()}", show_header=True)
+        table.add_column("From")
+        table.add_column("Program")
+        table.add_column("Miles", justify="right")
+        table.add_column("Fees", justify="right")
+        table.add_column("CPP", justify="right")
+        table.add_column("Value", justify="right")
+        table.add_column("")
+
+        for origin, deal in all_deals[:8]:
+            award = deal.award
+            is_unicorn = "🦄" if deal.is_unicorn else ""
+            table.add_row(
+                origin,
+                award.program,
+                f"{award.miles:,}",
+                f"${award.cash_fees:.0f}",
+                f"{deal.cpp:.1f}",
+                f"${deal.value_dollars:,.0f}",
+                is_unicorn,
+            )
+
+        console.print(table)
+
+    asyncio.run(find_best())
+
+
+@app.command()
+def compare(
+    origin: str = typer.Argument(..., help="Origin airport"),
+    destination: str = typer.Argument(..., help="Destination airport"),
+    cabin: str = typer.Option("business", "--cabin", "-c", help="Cabin class"),
+    days: int = typer.Option(7, "--days", "-d", help="Number of days to compare"),
+):
+    """Compare award availability across multiple dates."""
+    config = get_config()
+
+    try:
+        cabin_class = CabinClass(cabin.lower())
+    except ValueError:
+        console.print(f"[red]Invalid cabin: {cabin}[/]")
+        raise typer.Exit(1)
+
+    console.print(f"\n[bold]Comparing {origin.upper()} → {destination.upper()} ({cabin_class.value})[/]")
+    console.print(f"[dim]Next {days} days[/]\n")
+
+    async def compare_dates():
+        from .scrapers.demo import DemoScraper, get_demo_cash_price
+
+        scraper = DemoScraper()
+        analyzer = DealAnalyzer(config)
+
+        table = Table(title="Award Availability by Date", show_header=True)
+        table.add_column("Date")
+        table.add_column("Best Program")
+        table.add_column("Miles", justify="right")
+        table.add_column("CPP", justify="right")
+        table.add_column("Cash Price", justify="right")
+        table.add_column("")
+
+        for i in range(days):
+            date = datetime.now() + timedelta(days=i)
+            awards = await scraper.search_awards(origin.upper(), destination.upper(), date, cabin_class)
+            cash_price = get_demo_cash_price(origin.upper(), destination.upper(), cabin_class)
+
+            if awards:
+                # Find best deal for this date
+                deals = [analyzer.analyze_award(a, cash_price) for a in awards]
+                best_deal = max(deals, key=lambda d: d.cpp)
+                award = best_deal.award
+
+                is_unicorn = "🦄" if best_deal.is_unicorn else ""
+                table.add_row(
+                    date.strftime("%a %b %d"),
+                    award.program,
+                    f"{award.miles:,}",
+                    f"{best_deal.cpp:.1f}",
+                    f"${cash_price:,.0f}",
+                    is_unicorn,
+                )
+            else:
+                table.add_row(date.strftime("%a %b %d"), "-", "-", "-", "-", "")
+
+        console.print(table)
+
+    asyncio.run(compare_dates())
+
+
+# ============================================================================
+# Watch Commands
+# ============================================================================
+
+@app.command()
+def watch(
+    origin: str = typer.Argument(..., help="Origin airport"),
+    destination: str = typer.Argument(..., help="Destination airport"),
+    cabin: str = typer.Option("business", "--cabin", "-c", help="Cabin class"),
+    date: Optional[str] = typer.Option(None, "--date", "-d", help="Target date (YYYY-MM-DD)"),
+    min_cpp: float = typer.Option(0.0, "--min-cpp", help="Alert when CPP exceeds this value"),
+    max_miles: Optional[int] = typer.Option(None, "--max-miles", help="Alert when miles below this value"),
+):
+    """Add a route to your watch list for price tracking."""
+    db = get_db()
+
+    try:
+        cabin_class = CabinClass(cabin.lower())
+    except ValueError:
+        console.print(f"[red]Invalid cabin: {cabin}[/]")
+        raise typer.Exit(1)
+
+    target_date = None
+    if date:
+        try:
+            target_date = datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            console.print("[red]Invalid date format. Use YYYY-MM-DD[/]")
+            raise typer.Exit(1)
+
+    watch_id = db.add_watch(
+        origin=origin,
+        destination=destination,
+        cabin=cabin_class,
+        target_date=target_date,
+        min_cpp=min_cpp,
+        max_miles=max_miles,
+    )
+
+    console.print(f"[green]Watch #{watch_id} created:[/] {origin.upper()} → {destination.upper()} ({cabin})")
+    if min_cpp > 0:
+        console.print(f"  Alert when CPP ≥ {min_cpp}")
+    if max_miles:
+        console.print(f"  Alert when miles ≤ {max_miles:,}")
+    if target_date:
+        console.print(f"  Target date: {target_date.strftime('%b %d, %Y')}")
+
+
+@app.command()
+def watches():
+    """List all active watches."""
+    db = get_db()
+    watch_list = db.get_watches(active_only=True)
+
+    if not watch_list:
+        console.print("[yellow]No active watches.[/]")
+        console.print("Use 'pointsmaxxer watch SFO NRT' to add one.")
+        return
+
+    table = Table(title="Active Watches", show_header=True)
+    table.add_column("ID", style="dim")
+    table.add_column("Route")
+    table.add_column("Cabin")
+    table.add_column("Target Date")
+    table.add_column("Min CPP", justify="right")
+    table.add_column("Max Miles", justify="right")
+    table.add_column("Last Checked")
+
+    for w in watch_list:
+        target = w["target_date"].strftime("%b %d") if w["target_date"] else "Any"
+        last_checked = w["last_checked"].strftime("%b %d %H:%M") if w["last_checked"] else "Never"
+        max_miles_str = f"{w['max_miles']:,}" if w["max_miles"] else "-"
+        min_cpp_str = f"{w['min_cpp']:.1f}" if w["min_cpp"] > 0 else "-"
+
+        table.add_row(
+            str(w["id"]),
+            f"{w['origin']} → {w['destination']}",
+            w["cabin"],
+            target,
+            min_cpp_str,
+            max_miles_str,
+            last_checked,
+        )
+
+    console.print(table)
+
+
+@app.command()
+def unwatch(
+    watch_id: int = typer.Argument(..., help="Watch ID to remove"),
+):
+    """Remove a watch from your watch list."""
+    db = get_db()
+
+    if db.remove_watch(watch_id):
+        console.print(f"[green]Watch #{watch_id} removed.[/]")
+    else:
+        console.print(f"[red]Watch #{watch_id} not found.[/]")
+        raise typer.Exit(1)
+
+
+@app.command()
+def check_watches():
+    """Check all watches for matching deals."""
+    db = get_db()
+    config = get_config()
+    watch_list = db.get_watches(active_only=True)
+
+    if not watch_list:
+        console.print("[yellow]No active watches to check.[/]")
+        return
+
+    console.print(f"[bold]Checking {len(watch_list)} watches...[/]\n")
+
+    async def check_all():
+        from .scrapers.demo import DemoScraper, get_demo_cash_price
+
+        scraper = DemoScraper()
+        analyzer = DealAnalyzer(config)
+        alerts = []
+
+        for w in watch_list:
+            cabin_class = CabinClass(w["cabin"])
+            search_date = w["target_date"] or datetime.now()
+
+            awards = await scraper.search_awards(
+                w["origin"], w["destination"], search_date, cabin_class
+            )
+            cash_price = get_demo_cash_price(w["origin"], w["destination"], cabin_class)
+
+            matching_deals = []
+            for award in awards:
+                deal = analyzer.analyze_award(award, cash_price)
+
+                # Check if deal matches watch criteria
+                meets_cpp = w["min_cpp"] <= 0 or deal.cpp >= w["min_cpp"]
+                meets_miles = w["max_miles"] is None or award.miles <= w["max_miles"]
+
+                if meets_cpp and meets_miles:
+                    if w["min_cpp"] > 0 or w["max_miles"]:  # Only alert if criteria set
+                        matching_deals.append(deal)
+
+            db.update_watch_checked(w["id"], alerted=len(matching_deals) > 0)
+
+            if matching_deals:
+                alerts.append((w, matching_deals))
+
+        return alerts
+
+    alerts = asyncio.run(check_all())
+
+    if alerts:
+        console.print(f"[bold yellow]🔔 {len(alerts)} watches have matching deals![/]\n")
+
+        for watch_info, deals in alerts:
+            console.print(f"[bold]{watch_info['origin']} → {watch_info['destination']} ({watch_info['cabin']})[/]")
+            for deal in deals[:3]:  # Show top 3
+                award = deal.award
+                console.print(f"  {award.program}: {award.miles:,} miles @ {deal.cpp:.1f} cpp")
+            console.print()
+    else:
+        console.print("[green]All watches checked. No alerts triggered.[/]")
 
 
 # ============================================================================
