@@ -83,7 +83,8 @@ class SeatsAeroScraper(BaseScraper):
                 "Accept": "application/json",
             }
             if self.api_key:
-                headers["Partner-Authorization"] = f"Bearer {self.api_key}"
+                # Note: Pro API keys don't use Bearer prefix
+                headers["Partner-Authorization"] = self.api_key
 
             self._client = httpx.AsyncClient(
                 base_url=self.BASE_URL,
@@ -201,6 +202,10 @@ class SeatsAeroScraper(BaseScraper):
             seats_key = f"{cabin_code}RemainingSeats"
             seats = result.get(seats_key, 1) or 1
 
+            # Get taxes/fees
+            taxes_key = f"{cabin_code}TotalTaxes"
+            taxes = result.get(taxes_key, 0) or 0
+
             # Get airline info
             airlines_key = f"{cabin_code}Airlines"
             airlines = result.get(airlines_key, "")
@@ -243,7 +248,7 @@ class SeatsAeroScraper(BaseScraper):
                 program=source,
                 program_name=program_name,
                 miles=miles,
-                cash_fees=0.0,  # Not available in cached search
+                cash_fees=float(taxes),
                 cabin=cabin,
                 booking_class=None,
                 is_saver=True,  # Seats.aero shows saver availability

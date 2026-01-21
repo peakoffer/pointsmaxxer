@@ -1,143 +1,88 @@
-# PointsMaxxer Configuration
-# ==========================
-
-# Your points portfolio - add your actual balances here
 portfolio:
-  - name: Chase Ultimate Rewards
-    code: chase_ur
-    balance: 180000
-
-  - name: Amex Membership Rewards
-    code: amex_mr
-    balance: 95000
-
-  - name: Capital One Miles
-    code: cap_one
-    balance: 75000
-
-  - name: Bilt Rewards
-    code: bilt
-    balance: 45000
-
-  - name: British Airways Avios
-    code: ba_avios
-    balance: 120000
-
-  - name: American AAdvantage
-    code: aa
-    balance: 55000
-
-# Transfer partner mappings (program_code -> list of {partner: ratio})
+- name: Chase Ultimate Rewards
+  code: chase_ur
+  balance: 180000
+- name: Amex Membership Rewards
+  code: amex_mr
+  balance: 95000
+- name: Capital One Miles
+  code: cap_one
+  balance: 75000
+- name: Bilt Rewards
+  code: bilt
+  balance: 45000
+- name: British Airways Avios
+  code: ba_avios
+  balance: 120000
+- name: American AAdvantage
+  code: aa
+  balance: 55000
 transfers:
   chase_ur:
-    - united: 1.0
-    - aeroplan: 1.0
-    - virgin_atlantic: 1.0
-    - ba_avios: 1.0
-    - hyatt: 1.0
-    - singapore: 1.0
-    - flying_blue: 1.0
-    - iberia: 1.0
-
+  - united: 1.0
+  - aeroplan: 1.0
+  - virgin_atlantic: 1.0
+  - ba_avios: 1.0
+  - hyatt: 1.0
+  - singapore: 1.0
+  - flying_blue: 1.0
+  - iberia: 1.0
   amex_mr:
-    - delta: 1.0
-    - ana: 1.0
-    - virgin_atlantic: 1.0
-    - ba_avios: 1.0
-    - singapore: 1.0
-    - cathay: 1.0
-    - flying_blue: 1.0
-    - emirates: 1.0
-
+  - delta: 1.0
+  - ana: 1.0
+  - virgin_atlantic: 1.0
+  - ba_avios: 1.0
+  - singapore: 1.0
+  - cathay: 1.0
+  - flying_blue: 1.0
+  - emirates: 1.0
   cap_one:
-    - turkish: 1.0
-    - avianca: 1.0
-    - flying_blue: 1.0
-    - ba_avios: 1.0
-    - virgin_atlantic: 1.0
-    - singapore: 1.0
-    - emirates: 1.0
-
+  - turkish: 1.0
+  - avianca: 1.0
+  - flying_blue: 1.0
+  - ba_avios: 1.0
+  - virgin_atlantic: 1.0
+  - singapore: 1.0
+  - emirates: 1.0
   bilt:
-    - aa: 1.0
-    - united: 1.0
-    - aeroplan: 1.0
-    - virgin_atlantic: 1.0
-    - turkish: 1.0
-    - flying_blue: 1.0
-    - alaska: 1.0
-
-# Routes to monitor for award availability
+  - aa: 1.0
+  - united: 1.0
+  - aeroplan: 1.0
+  - virgin_atlantic: 1.0
+  - turkish: 1.0
+  - flying_blue: 1.0
+  - alaska: 1.0
 routes:
-  # Specific high-value routes
-  - origin: SFO
-    destination: NRT
-    cabin: business
-
-  - origin: SFO
-    destination: LHR
-    cabin: business
-
-  - origin: SFO
-    destination: SIN
-    cabin: business
-
-  - origin: SFO
-    destination: HND
-    cabin: first
-
-  # Monitor premium cabins from home airport to anywhere
-  - origin: SFO
-    destination: "*"
-    cabin: business
-
-  - origin: SFO
-    destination: "*"
-    cabin: first
-
-# Application settings
+- origin: SFO
+  destination: NRT
+  cabin: business
+- origin: SFO
+  destination: LHR
+  cabin: business
+- origin: SFO
+  destination: SIN
+  cabin: business
+- origin: SFO
+  destination: HND
+  cabin: first
+- origin: SFO
+  destination: '*'
+  cabin: business
+- origin: SFO
+  destination: '*'
+  cabin: first
 settings:
-  # Your home airports (for origin searches)
   home_airports:
-    - SFO
-    - OAK
-    - SJC
-
-  # Minimum CPP to trigger unicorn alert
+  - SFO
+  - OAK
+  - SJC
   unicorn_threshold_cpp: 7.0
-
-  # How far in advance to search (days)
   search_window_days: 90
-
-  # Flexible date search range (+/- days)
   flexible_days: 3
-
-  # How often to run automated scans
-  scan_frequency: daily  # Options: hourly, twice_daily, daily
-
-  # Maximum number of stops for flights
+  scan_frequency: daily
   max_stops: 1
-
-  # Cache settings
   cache_ttl_hours: 6
-
-  # Delay between requests (be nice to servers)
   request_delay_seconds: 2.0
-
-  # Seats.aero API key for real award availability data
-  # Get your key at: https://seats.aero
-  # seats_aero_api_key: your-api-key-here
-
-# Alert configuration
+  seats_aero_api_key: pro_38Xn1HRVOgd7rUXHSmq6UijgLmc
 alerts:
-  # Show alerts in terminal
   terminal: true
-
-  # Email alerts (optional)
-  # email: your@email.com
-
-  # Slack webhook (optional)
-  # slack_webhook: https://hooks.slack.com/services/xxx
-
-  # Discord webhook (optional)
-  # discord_webhook: https://discord.com/api/webhooks/xxx
