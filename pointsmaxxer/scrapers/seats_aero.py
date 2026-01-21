@@ -204,7 +204,16 @@ class SeatsAeroScraper(BaseScraper):
 
             # Get taxes/fees
             taxes_key = f"{cabin_code}TotalTaxes"
-            taxes = result.get(taxes_key, 0) or 0
+            taxes_raw = result.get(taxes_key, 0) or 0
+
+            # Sanity check: fees > $10,000 are likely data errors (possibly wrong currency unit)
+            # BA surcharges are high but not THAT high
+            if taxes_raw > 10000:
+                # Assume it might be in minor currency units (pence/cents) - convert
+                # Or just cap it as suspicious
+                taxes = min(taxes_raw, 2500)  # Cap at reasonable max
+            else:
+                taxes = taxes_raw
 
             # Get airline info
             airlines_key = f"{cabin_code}Airlines"

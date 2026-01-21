@@ -328,6 +328,7 @@ def _display_search_results(deals: list, origin: str, destination: str, cabin: C
         console.print(table)
 
     console.print(f"\n[dim]Found {len(deals)} total awards, {len(unicorns)} unicorns[/]")
+    console.print("[dim]Note: $0 fees may have taxes at booking. Fees >$10k capped at $2500 (data quality).[/]")
 
 
 @app.command()
